@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Falam Filan İnter Milan</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
+    <script src='https://api.mapbox.com/mapbox-gl-js/v2.14.1/mapbox-gl.js'></script>
+    <link href='https://api.mapbox.com/mapbox-gl-js/v2.14.1/mapbox-gl.css' rel='stylesheet' />
+    <style>
+        body { margin: 0; padding: 0; }
+        #map { position: absolute; top: 0; bottom: 0; width: 75%; }
+        .sidebar {
+            background-color: white;
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 25%;
+            height: 100%;
+            z-index: 1;
+            overflow: auto;
+            padding: 10px;
+        }
+        #addresses {
+            list-style-type: none;
+            padding: 0;
+        }
+        #routeInfo {
+            margin-top: 20px;
+        }
+        .attribution {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.7);
+            font-size: 12px;
+            z-index: 2;
+        }
+    </style>
+</head>
+<body>
+    <div id='map'></div>
+    <div class="sidebar">
+        <ul id="addresses"></ul>
+        <label for="departureTime">Kalkış Zamanı:</label>
+        <input type="datetime-local" id="departureTime" name="departureTime">
+        <button id="routeBtn">Rota Hesapla</button>
+        <div id="routeInfo"></div>
+    </div>
+    <div class="attribution">Created by Yasin Ferit Uğuz</div>
+    <script>
+        // Token
+        mapboxgl.accessToken = 'pk.eyJ1IjoibGltaXRsZXNzMDAiLCJhIjoiY2xvbDczZjd2MTh1ejJxbzU4aDl4OXY0cCJ9.PWc78VsW7GrLL7226hM1AQ';
+        var map = new mapboxgl.Map({
+            container: 'map',
+            style: 'mapbox://styles/mapbox/streets-v11',
+            center: [28.9784, 41.0082], // İstanbul koordinatları
+            zoom: 13
+        });
+
+        // Başlangıç ve bitiş noktalarını ve ara noktaları tanımla
+        var startPoint, endPoint;
+        var waypoints = [];
+        var trafficDelay = 10; // Trafik gecikmesi için varsayılan değer
+
+        // Adresleri listeye ekleme fonksiyonu
+        function addAddressToList(description, address) {
+            var listItem = document.createElement('li');
+            listItem.textContent = description + ': ' + address;
+            addressList.appendChild(listItem);
+        }
+
+        // Koordinatlardan yer ismi alma fonksiyonu
+        function getPlaceName(lngLat, description) {
+            fetch('https://api.mapbox.com/geocoding/v5/mapbox.places/' +
+                lngLat.lng + ',' + lngLat.lat + '.json?access_token=' + mapboxgl.accessToken)
+                .then(response => response.json())
+                .then(data => {
+                    var placeName = data.features[0].place_name;
+                    addAddressToList(description, placeName);
+                });
+        }
+
+        // Harita üzerine tıklandığında noktaları belirleme olayı
+        map.on('click', function(e) {
+            if (!startPoint) {
+                startPoint = e.lngLat;
+                new mapboxgl.Marker({ color: 'green' }).setLngLat(startPoint).addTo(map);
+                getPlaceName(startPoint, 'Başlangıç Noktası');
+            } else if (!endPoint) {
+                endPoint = e.lngLat;
+                new mapboxgl.Marker({ color: 'red' }).setLngLat(endPoint).addTo(map);
+                getPlaceName(endPoint, 'Bitiş Noktası');
+            } else {
+                waypoints.push(e.lngLat);
+                new mapboxgl.Marker().setLngLat(e.lngLat).addTo(map);
+                getPlaceName(e.lngLat, 'Yol Noktası ' + waypoints.length);
+            }
+        });
+
+        // Rota hesaplama butonu 
+        document.getElementById('routeBtn').onclick = function() {
+            if (startPoint && endPoint && waypoints.length > 0) {
+                getRoute();
+            } else {
+                alert('Lütfen başlangıç, bitiş ve en az bir ara nokta seçin.');
+            }
+        };
+
+        // Rota bilgilerini çekme ve haritada gösterme fonksiyonu
+        function getRoute() {
+            var departureTime = document.getElementById('departureTime').value;
+            var routeWaypoints = [startPoint].concat(waypoints).concat([endPoint]);
+            var urlCoordinates = routeWaypoints.map(function(point) {
+                return [point.lng, point.lat].join(',');
+            }).join(';');
+
+            var url = 'https://api.mapbox.com/directions/v5/mapbox/driving/' +
+                urlCoordinates +
+                '?geometries=geojson&steps=true&access_token=' + mapboxgl.accessToken +
+                '&depart_at=' + departureTime;
+
+            fetch(url)
+            .then(response => response.json())
+            .then(data => {
+                var route = data.routes[0].geometry;
+                var distance = (data.routes[0].distance / 1000).toFixed(2); // kilometre cinsinden
+                var duration = data.routes[0].duration / 60; // dakika cinsinden
+                var durationWithTraffic = duration + trafficDelay; // trafik gecikmesini ekle
+                addRouteToMap(route);
+                updateRouteInfo(distance, durationWithTraffic, departureTime);
+            });
+        }
+
+        // Haritaya rota ekleyen fonksiyon
+        function addRouteToMap(route) {
+            if (map.getSource('route')) {
+                map.getSource('route').setData(route);
+            } else {
+                map.addSource('route', {
+                    type: 'geojson',
+                    data: route
+                });
+
+                map.addLayer({
+                    id: 'route',
+                    type: 'line',
+                    source: 'route',
+                    layout: {
+                        'line-join': 'round',
+                        'line-cap': 'round'
+                    },
+                    paint: {
+                        'line-color': '#ff7e5f',
+                        'line-width': 6
+                    }
+                });
+            }
+        }
+
+        // Rota bilgilerini güncelleyen fonksiyon
+        function updateRouteInfo(distance, durationWithTraffic, departureTimeValue) {
+            var departureTime = new Date(departureTimeValue);
+            var durationMinutes = Math.floor(durationWithTraffic);
+            var durationSeconds = Math.floor((durationWithTraffic - durationMinutes) * 60);
+            var arrivalTime = new Date(departureTime.getTime() + durationWithTraffic * 60000);
+            var routeInfo = document.getElementById('routeInfo');
+            routeInfo.innerHTML = '<strong>Gidilen KM:</strong> ' + distance + ' km<br>' +
+                                  '<strong>Tahmini Süre (Trafik Dahil):</strong> ' + durationMinutes + ' dakika ' + durationSeconds + ' saniye<br>' +
+                                  '<strong>Varış Zamanı:</strong> ' + arrivalTime.toLocaleString() + '<br>';
+        }
+    </script>
+</body>
+</html>
